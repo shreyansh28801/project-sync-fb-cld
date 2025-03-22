@@ -13,14 +13,53 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "firebase-project-sync",
+          "title": "Firebase Project Sync",
+          "icon": "./extension-icon.jpeg"
+        }
+      ]
+    },
+    "views": {
+      "firebase-project-sync": [
+        {
+          "type": "webview",
+          "id": "firebase-project-sync.sidebar",
+          "name": "Firebase Project Sync",
+          "visibility": "visible"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "project-sync-fb-cld.helloWorld",
-        "title": "Hello World"
+        "command": "firebase-project-sync.sidebar",
+        "title": "Sidebar Features -  Project Sync"
       },
       {
-        "command": "firebase-project-sync.sidebar",
-        "title": "cld Features Project Sync Mang."
+        "command": "firebase-project-sync.signIn",
+        "title": "Sign In with Google"
+      },
+      {
+        "command": "firebase-project-sync.saveProject",
+        "title": "Save New Project"
+      },
+      {
+        "command": "firebase-project-sync.updateProject",
+        "title": "Update Project"
+      },
+      {
+        "command": "firebase-project-sync.listProjects",
+        "title": "List Projects"
+      },
+      {
+        "command": "firebase-project-sync.deleteProject",
+        "title": "Delete Project"
+      },
+      {
+        "command": "firebase-project-sync.logout",
+        "title": "Logout"
       }
     ]
   },
@@ -53,5 +92,4 @@
     "firebase": "^11.5.0"
   },
   "repository": "github:username/repository-name"
-
 }

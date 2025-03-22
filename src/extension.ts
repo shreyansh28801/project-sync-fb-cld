@@ -1,24 +1,27 @@
 // Extension Entry Point: extension.ts
 import * as vscode from 'vscode';
 import * as firebase from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithCredential, 
-  GoogleAuthProvider, 
-  signOut, 
+import {
+  getAuth,
+  signInWithCredential,
+  GoogleAuthProvider,
+  signOut,
   onAuthStateChanged,
   OAuthCredential
 } from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  getDocs, 
-  doc, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
-  where 
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  getDocs,
+  setDoc,
+  getDoc,
+  doc,
+  updateDoc,
+  deleteDoc,
+  serverTimestamp,
+  query,
+  where
 } from 'firebase/firestore';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,15 +30,16 @@ import * as url from 'url';
 import * as querystring from 'querystring';
 import { randomBytes } from 'crypto';
 import { promisify } from 'util';
+import { timeStamp } from 'console';
 
 // Firebase configuration
 const firebaseConfig = {
-	apiKey: "AIzaSyDjwbpX8wZFmA2dw0_XmNTLhN9BuvtnrwY",
-	authDomain: "project-sync-fb-cld-test.firebaseapp.com",
-	projectId: "project-sync-fb-cld-test",
-	storageBucket: "project-sync-fb-cld-test.firebasestorage.app",
-	messagingSenderId: "560523365397",
-	appId: "1:560523365397:web:8308277e4cf1e7984f921c"
+  apiKey: "AIzaSyDjwbpX8wZFmA2dw0_XmNTLhN9BuvtnrwY",
+  authDomain: "project-sync-fb-cld-test.firebaseapp.com",
+  projectId: "project-sync-fb-cld-test",
+  storageBucket: "project-sync-fb-cld-test.firebasestorage.app",
+  messagingSenderId: "560523365397",
+  appId: "1:560523365397:web:8308277e4cf1e7984f921c"
 };
 
 // Initialize Firebase
@@ -52,12 +56,18 @@ const SCOPES = ["email", "profile", "openid"];
 let currentUser: any = null;
 let activePanel: vscode.WebviewPanel | undefined = undefined;
 
+interface Project {
+  id: string;
+  fileNames?: string[];
+  timestamps?: { seconds: number; nanoseconds: number }; // Firestore timestamps
+}
+
 export function activate(context: vscode.ExtensionContext) {
   console.log('Firebase Project Sync extension is now active');
 
   // Create a sidebar view provider
   const provider = new FirebaseProjectSyncViewProvider(context.extensionUri);
-  
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       FirebaseProjectSyncViewProvider.viewType,
@@ -65,10 +75,13 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('firebase-project-sync.signIn', async () => {
       await performGoogleOAuth(context);
+      vscode.window.showInformationMessage('Signing Success : ', currentUser.displayName || currentUser.email);
+      await createUser(currentUser.uid, currentUser.displayName || currentUser.email);
     }),
 
     vscode.commands.registerCommand('firebase-project-sync.saveProject', async () => {
@@ -76,13 +89,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage('Please sign in first');
         return;
       }
-      const projectName = await vscode.window.showInputBox({
-        prompt: 'Enter project name',
-        placeHolder: 'My Project'
-      });
-      if (projectName) {
-        saveNewProject(projectName);
-      }
+      saveNewProject();
     }),
 
     vscode.commands.registerCommand('firebase-project-sync.updateProject', async () => {
@@ -90,16 +97,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage('Please sign in first');
         return;
       }
-      const projects = await getProjects();
-      const projectItems = projects.map(p => ({ label: p.name, id: p.id }));
-      
-      const selectedProject = await vscode.window.showQuickPick(projectItems, {
-        placeHolder: 'Select a project to update'
-      });
-      
-      if (selectedProject) {
-        updateProject(selectedProject.id, selectedProject.label);
-      }
+
+      updateProject();
     }),
 
     vscode.commands.registerCommand('firebase-project-sync.listProjects', async () => {
@@ -115,16 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage('Please sign in first');
         return;
       }
-      const projects = await getProjects();
-      const projectItems = projects.map(p => ({ label: p.name, id: p.id }));
-      
-      const selectedProject = await vscode.window.showQuickPick(projectItems, {
-        placeHolder: 'Select a project to delete'
-      });
-      
-      if (selectedProject) {
-        deleteProject(selectedProject.id);
-      }
+      deleteProject();
     }),
 
     vscode.commands.registerCommand('firebase-project-sync.logout', () => {
@@ -165,7 +155,7 @@ export function activate(context: vscode.ExtensionContext) {
 async function performGoogleOAuth(context: vscode.ExtensionContext) {
   // Generate a random state value to prevent CSRF attacks
   const state = randomBytes(16).toString('hex');
-  
+
   // Create OAuth URL
   const authUrl = `https://accounts.google.com/o/oauth2/auth?` +
     `client_id=${CLIENT_ID}&` +
@@ -178,37 +168,37 @@ async function performGoogleOAuth(context: vscode.ExtensionContext) {
 
   // Open browser for authentication
   vscode.env.openExternal(vscode.Uri.parse(authUrl));
-  
+
   // Start a local server to handle the OAuth redirect
   const server = http.createServer();
-  
+
   // Promise to resolve when auth is complete
-  const authComplete = new Promise<{code: string, state: string}>((resolve, reject) => {
+  const authComplete = new Promise<{ code: string, state: string }>((resolve, reject) => {
     server.on('request', (req, res) => {
       // Parse the URL and query parameters
       const parsedUrl = url.parse(req.url || '');
       const queryParams = querystring.parse(parsedUrl.query || '');
-      
+
       // Check if this is the OAuth callback
       if (parsedUrl.pathname === '/callback') {
         // Close the response
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body><h1>Authentication successful!</h1><p>You can close this window and return to VS Code.</p></body></html>');
-        
+
         // Check state parameter to prevent CSRF
         if (queryParams.state !== state) {
           reject(new Error('Invalid authentication state'));
           server.close();
           return;
         }
-        
+
         // Check for errors
         if (queryParams.error) {
           reject(new Error(`Authentication error: ${queryParams.error}`));
           server.close();
           return;
         }
-        
+
         // Get the authorization code
         if (queryParams.code) {
           resolve({
@@ -222,17 +212,17 @@ async function performGoogleOAuth(context: vscode.ExtensionContext) {
         }
       }
     });
-    
+
     // Listen on localhost:3000
     server.listen(3000);
   });
-  
+
   try {
     vscode.window.showInformationMessage('Waiting for authentication in browser...');
-    
+
     // Wait for the authorization code
     const { code } = await authComplete;
-    
+
     // Exchange the code for tokens
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -247,26 +237,47 @@ async function performGoogleOAuth(context: vscode.ExtensionContext) {
         grant_type: 'authorization_code'
       })
     });
-    
-	const tokenData = (await tokenResponse.json()) as { id_token?: string };
-    
+
+    const tokenData = (await tokenResponse.json()) as { id_token?: string };
+
     if (!tokenData.id_token) {
       throw new Error('Failed to get ID token');
     }
-    
+
     // Create credential from the ID token
     const credential = GoogleAuthProvider.credential(tokenData.id_token);
-    
+
     // Sign in with Firebase using the credential
     const userCredential = await signInWithCredential(auth, credential);
-    
+
     // Store the credential for future use
     context.globalState.update('firebase-credentials', credential);
-    
+
     return userCredential.user;
   } catch (error: any) {
     vscode.window.showErrorMessage(`Authentication failed: ${error.message}`);
     throw error;
+  }
+}
+
+async function createUser(userId: string, email: string) {
+  try {
+    const userRef = doc(db, 'users', userId);
+    const userSnap = await getDoc(userRef);
+
+    if (userSnap.exists()) {
+      console.log(`User "${userId}" already exists!`);
+      return;
+    }
+
+    await setDoc(userRef, {
+      email: email,
+      createdAt: new Date()
+    });
+    vscode.window.showInformationMessage(`New User "${email}" saved successfully!`);
+    console.log(`User "${email}" created successfully!`);
+  } catch (error: any) {
+    console.error(`Failed to create user: ${error.message}`);
   }
 }
 
@@ -281,56 +292,104 @@ async function signOutUser() {
 }
 
 // Save new project
-async function saveNewProject(projectName: string) {
+async function saveNewProject() {
   try {
-    const files = await getWorkspaceFiles();
+    const projectName = vscode.workspace.name;
+    if (!projectName) {
+      vscode.window.showErrorMessage('Project name is required.');
+      return;
+    }
+
+    // Generate project reference
+    const projectRef = doc(db, 'users', currentUser.uid , 'projects', projectName);
+    const projectSnap = await getDoc(projectRef);
     
-    if (files.length === 0) {
+    if (projectSnap.exists()) {
+      vscode.window.showErrorMessage(`Project "${projectName}" already exists!`);
+      return;
+    }
+    
+    const files = await vscode.workspace.findFiles('**/*');
+    const fileNames = files.map(file => file.fsPath);
+
+    if (fileNames.length === 0) {
       vscode.window.showWarningMessage('No files found in the current workspace');
       return;
     }
 
-    await addDoc(collection(db, 'projects'), {
-      name: projectName,
-      userId: currentUser.uid,
-      files: files,
-      createdAt: new Date()
+    await setDoc(projectRef, {
+      id: projectName,
+      fileNames: fileNames,
+      timestamp: serverTimestamp(),
     });
 
-    vscode.window.showInformationMessage(`Project "${projectName}" saved successfully`);
+    vscode.window.showInformationMessage(`New Project "${projectName}" saved successfully!`);
   } catch (error: any) {
-    vscode.window.showErrorMessage(`Failed to save project: ${error.message}`);
+    const err = error as Error;
+    vscode.window.showErrorMessage('Failed to save project: ' + err.message);
   }
 }
 
 // Update existing project
-async function updateProject(projectId: string, projectName: string) {
+async function updateProject() {
   try {
-    const files = await getWorkspaceFiles();
-    
-    if (files.length === 0) {
-      vscode.window.showWarningMessage('No files found in the current workspace');
+    const projectId = vscode.workspace.name;
+    if (!projectId) {
+      vscode.window.showErrorMessage('No workspace is opened to update.');
       return;
     }
 
-    const projectRef = doc(db, 'projects', projectId);
-    await updateDoc(projectRef, {
-      files: files,
-      updatedAt: new Date()
-    });
+    const projectRef = doc(db, 'users', currentUser.uid , 'projects', projectId);
+    const projectSnap = await getDoc(projectRef);
 
-    vscode.window.showInformationMessage(`Project "${projectName}" updated successfully`);
+    if (!projectSnap.exists()) {
+      vscode.window.showErrorMessage('Project does not exist!');
+      return;
+    }
+
+    const files = await vscode.workspace.findFiles('**/*');
+    const fileNames = files.map(file => file.fsPath);
+
+    await updateDoc(projectRef, { 
+      fileNames ,
+      timestamps: serverTimestamp()
+    });
+    vscode.window.showInformationMessage(`Project "${projectId}" updated successfully`);
   } catch (error: any) {
     vscode.window.showErrorMessage(`Failed to update project: ${error.message}`);
   }
 }
 
 // Delete project
-async function deleteProject(projectId: string) {
+async function deleteProject() {
   try {
-    const projectRef = doc(db, 'projects', projectId);
+    const projectId = vscode.workspace.name;
+    if (!projectId) {
+      vscode.window.showErrorMessage('No workspace is opened to delete.');
+      return;
+    }
+    const projectRef = doc(db, 'users', currentUser.uid, 'projects', projectId);
+    const projectSnap = await getDoc(projectRef);
+
+    if (!projectSnap.exists()) {
+      vscode.window.showErrorMessage('Project does not exist!');
+      return;
+    }
+
+    // Confirm before deleting
+    const confirmDelete = await vscode.window.showWarningMessage(
+      `Are you sure you want to delete project "${projectId}"?`,
+      { modal: true }, 'Yes'
+    );
+
+    if (confirmDelete !== 'Yes') {
+      vscode.window.showInformationMessage('Project deletion canceled.');
+      return;
+    }
+
     await deleteDoc(projectRef);
-    vscode.window.showInformationMessage('Project deleted successfully');
+
+    vscode.window.showInformationMessage(`Project "${projectId}" deleted successfully!`);
   } catch (error: any) {
     vscode.window.showErrorMessage(`Failed to delete project: ${error.message}`);
   }
@@ -339,18 +398,25 @@ async function deleteProject(projectId: string) {
 // Get all projects for current user
 async function getProjects() {
   try {
-    const projectsQuery = query(
-      collection(db, 'projects'),
-      where('userId', '==', currentUser.uid)
-    );
-    
-    const projectDocs = await getDocs(projectsQuery);
-    return projectDocs.docs.map(doc => ({
-      id: doc.id,
-      name: doc.data().name,
-      files: doc.data().files,
-      createdAt: doc.data().createdAt
-    }));
+    const projectsRef = collection(db, 'users', currentUser.uid, 'projects');
+    const projectDocs = await getDocs(projectsRef);
+
+    if (projectDocs.empty) {
+      vscode.window.showInformationMessage('No projects found.');
+      return [];
+    }
+
+    const projects: Project[] = projectDocs.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        fileNames: data.fileNames || [],
+        timestamps: data.timestamps
+      } as Project
+     
+    });
+
+    return projects;
   } catch (error: any) {
     vscode.window.showErrorMessage(`Failed to fetch projects: ${error.message}`);
     return [];
@@ -361,9 +427,9 @@ async function getProjects() {
 async function showProjectList() {
   try {
     const projects = await getProjects();
-    
-    if (projects.length === 0) {
-      vscode.window.showInformationMessage('No projects found');
+
+    if (!projects || projects.length === 0) {
+      vscode.window.showInformationMessage('No projects found.');
       return;
     }
 
@@ -393,17 +459,25 @@ async function showProjectList() {
     `;
 
     projects.forEach(project => {
+      const createdAt = project.timestamps
+        ? new Date(project.timestamps.seconds * 1000).toLocaleString()
+        : 'Unknown';
+
       projectListHtml += `
         <div class="project">
-          <div class="project-name">${project.name}</div>
-          <div>Created: ${new Date(project.createdAt.seconds * 1000).toLocaleString()}</div>
+          <div class="project-name">${project.id || 'Unnamed Project'}</div>
+          <div class="timestamp">Created: ${createdAt}</div>
           <div>Files:</div>
           <ul class="file-list">
       `;
 
-      project.files.forEach((file: string) => {
-        projectListHtml += `<li>${file}</li>`;
-      });
+      if (project.fileNames && project.fileNames.length > 0) {
+        project.fileNames.forEach((file: string) => {
+          projectListHtml += `<li>${file}</li>`;
+        });
+      } else {
+        projectListHtml += `<li>No files found.</li>`;
+      }
 
       projectListHtml += `
           </ul>
@@ -412,9 +486,13 @@ async function showProjectList() {
     });
 
     projectListHtml += `
+          </div>
         </body>
       </html>
     `;
+
+    activePanel.webview.html = projectListHtml;
+
 
     activePanel.webview.html = projectListHtml;
   } catch (error: any) {
@@ -422,49 +500,12 @@ async function showProjectList() {
   }
 }
 
-// Get all files in current workspace
-async function getWorkspaceFiles(): Promise<string[]> {
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  
-  if (!workspaceFolders || workspaceFolders.length === 0) {
-    vscode.window.showErrorMessage('No workspace folder open');
-    return [];
-  }
-
-  const rootPath = workspaceFolders[0].uri.fsPath;
-  const files: string[] = [];
-
-  // Function to recursively get all files
-  const getFiles = (dirPath: string) => {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    
-    for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
-      
-      // Skip node_modules, .git, and other hidden folders
-      if (entry.isDirectory()) {
-        if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-          getFiles(fullPath);
-        }
-      } else {
-        // Store relative path from workspace root
-        const relativePath = path.relative(rootPath, fullPath);
-        files.push(relativePath);
-      }
-    }
-  };
-
-  getFiles(rootPath);
-  return files;
-}
-
-// Sidebar view provider
 class FirebaseProjectSyncViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'firebase-project-sync.sidebar';
   private _view?: vscode.WebviewView;
   private _user: any = null;
 
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(private readonly _extensionUri: vscode.Uri) { }
 
   public updateUser(user: any) {
     this._user = user;
@@ -478,12 +519,13 @@ class FirebaseProjectSyncViewProvider implements vscode.WebviewViewProvider {
     context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
+    console.log('resolveWebviewView', webviewView);
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this._extensionUri]
     };
-    
+    console.log('resolveWebviewView', this._view);
     this._updateView();
   }
 
@@ -493,7 +535,7 @@ class FirebaseProjectSyncViewProvider implements vscode.WebviewViewProvider {
     }
 
     const isLoggedIn = !!this._user;
-    
+
     this._view.webview.html = `
       <!DOCTYPE html>
       <html lang="en">
