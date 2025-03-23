@@ -39,7 +39,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('firebase-project-sync.signIn', async () => {
       performGoogleOAuth(context)
         .then(() => {
-          vscode.window.showInformationMessage('Signing Success : ', currentUser.displayName || currentUser.email);
+          console.log('uid : ', currentUser.uid);
+          vscode.window.showInformationMessage('Signing Success with uid and name respectively : ', currentUser.displayName || currentUser.email, currentUser.uid);
         })
         .catch((error: any) => {
           vscode.window.showErrorMessage('Failed to sign in: ' + error.message);
