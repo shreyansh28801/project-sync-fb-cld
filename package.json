@@ -60,6 +60,10 @@
       {
         "command": "firebase-project-sync.logout",
         "title": "Logout"
+      },
+      {
+        "command": "firebase-sync.toggleRealtimeSync",
+        "title": "Toggle Realtime Sync"
       }
     ]
   },
