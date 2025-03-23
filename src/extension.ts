@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
       performGoogleOAuth(context)
         .then(() => {
           console.log('uid : ', currentUser.uid);
-          vscode.window.showInformationMessage('Signing Success with uid and name respectively : ', currentUser.displayName || currentUser.email, currentUser.uid);
+          vscode.window.showInformationMessage('Signing Success with name and uid respectively : ', currentUser.displayName || currentUser.email, currentUser.uid);
         })
         .catch((error: any) => {
           vscode.window.showErrorMessage('Failed to sign in: ' + error.message);
