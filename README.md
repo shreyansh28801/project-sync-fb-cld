@@ -48,10 +48,15 @@ A VS Code extension that allows you to sync your projects with Firebase.
 4. Copy your Firebase config from the Firebase console and replace the placeholder in `src/extension.ts`
 5. Make sure your Firestore security rules allow authenticated users to read/write their own data
 
-'''
+```
 /users/{userId}/projects/{projectId}
     ├── name: string  // Project name
     ├── fileNames: array  // List of project file paths
     ├── timestamp: timestamp  // When the project was created/updated
 
-'''
+```
+
+## Snapshot
+<img width="1728" alt="image" src="https://github.com/user-attachments/assets/1a2c3d29-7b59-4c51-8806-f5b405bd1562" />
+<img width="1660" alt="image" src="https://github.com/user-attachments/assets/c000bd34-86bc-42b5-9fa3-3e599a4095c9" />
+
